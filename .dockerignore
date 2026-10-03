@@ -1,0 +1,23 @@
+# Build output (rebuilt inside the container)
+**/bin/
+**/obj/
+
+# IDE and OS files
+.vs/
+.vscode/
+*.user
+.DS_Store
+
+# Secrets and local config (never copy into an image)
+local.settings.json
+
+# Azurite local data
+__azurite_db_*.json
+__blobstorage__/
+__queuestorage__/
+__tablestorage__/
+
+# Git and docs
+.git/
+.gitignore
+*.md

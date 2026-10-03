@@ -1,0 +1,11 @@
+{
+  "version": "2.0",
+  "extensions": {
+    "queues": {
+      "maxPollingInterval": "00:00:02",
+      "visibilityTimeout": "00:00:05",
+      "batchSize": 4,
+      "maxDequeueCount": 3
+    }
+  }
+}

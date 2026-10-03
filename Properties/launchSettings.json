@@ -1,0 +1,15 @@
+{
+  "profiles": {
+    "PageTurn.Functions": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7068"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker",
+      "launchUrl": "{Scheme}://{ServiceHost}:{ServicePort}",
+      "containerRunArguments": "--init",
+      "httpPort": 31279,
+      "useSSL": false
+    }
+  }
+}

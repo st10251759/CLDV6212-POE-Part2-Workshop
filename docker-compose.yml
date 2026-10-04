@@ -1,0 +1,155 @@
+# =============================================================================
+# PageTurn Campus Bookshop - Docker Compose (Part 2)
+# -----------------------------------------------------------------------------
+# One command starts the whole backend:      docker compose up -d
+# One command stops it (data is kept):       docker compose down
+#
+# Services
+#   azurite   : Azure Storage emulator (Blob, Queue, Table)
+#   functions : Azure Functions app (HTTP triggers + QueueTrigger)
+#
+# Both images are PULLED FROM DOCKER HUB. There is no `build:` path anywhere,
+# which is the mandatory Part 2 marking rule.
+#
+# Values such as the Docker Hub user and tags come from the .env file next to
+# this file, so nothing is hard-coded and the stack is easy to re-version.
+# =============================================================================
+
+name: pageturn
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # AZURITE: local emulator for Azure Storage
+  #   Blob  -> staff-docs container (documents)
+  #   Queue -> order-processing-queue (+ its -poison queue)
+  #   Table -> Books and Orders tables
+  # ---------------------------------------------------------------------------
+  azurite:
+    image: ${DOCKERHUB_USER:-cameron0902}/pageturn-azurite:${AZURITE_TAG:-v1.0}
+    pull_policy: always              # always fetch from Docker Hub (proves the publish)
+    container_name: pageturn-azurite
+    hostname: azurite                # the Functions container reaches it by this name
+
+    # --blobHost/--queueHost/--tableHost 0.0.0.0 : listen on all interfaces so other
+    #                                              containers can connect (default is localhost only)
+    # --location /data                           : write all storage data to the mounted volume
+    # --skipApiVersionCheck                      : accept newer Azure SDK API versions
+    # --disableProductStyleUrl                   : use path-style URLs, which are safer with Docker hostnames
+    command: >-
+      azurite
+      --blobHost 0.0.0.0
+      --queueHost 0.0.0.0
+      --tableHost 0.0.0.0
+      --location /data
+      --skipApiVersionCheck
+      --disableProductStyleUrl
+
+    ports:
+      - "10000:10000"                # Blob   (host:container)
+      - "10001:10001"                # Queue
+      - "10002:10002"                # Table
+      # Published to the host so Azure Storage Explorer can inspect the data during demos.
+
+    volumes:
+      - azurite-data:/data           # named volume: books, documents and orders survive restarts
+
+    networks:
+      - pageturn-net
+
+    # Marked healthy only when Blob port 10000 accepts connections.
+    # Node is already inside the Azurite image, so no extra tools are needed.
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('net').connect(10000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    restart: unless-stopped
+    init: true                       # proper signal handling and zombie-process reaping
+    security_opt:
+      - no-new-privileges:true       # container processes cannot gain extra privileges
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"              # log rotation so logs never fill the disk
+        max-file: "3"
+    labels:
+      com.pageturn.description: "Azure Storage emulator (Blob, Queue, Table)"
+
+  # ---------------------------------------------------------------------------
+  # FUNCTIONS: PageTurn Azure Functions app
+  #   HTTP triggers : /api/books, /api/documents, /api/orders
+  #   QueueTrigger  : ProcessOrderQueue (reads order-processing-queue)
+  # ---------------------------------------------------------------------------
+  functions:
+    image: ${DOCKERHUB_USER:-cameron0902}/pageturn-functions:${FUNCTIONS_TAG:-v2.0}
+    pull_policy: always
+    container_name: pageturn-functions
+    hostname: functions
+
+    # Start only after Azurite reports healthy, not just "started".
+    # This removes the startup race where the Functions host cannot reach storage.
+    depends_on:
+      azurite:
+        condition: service_healthy
+
+    ports:
+      - "${FUNCTIONS_PORT:-7071}:80"   # http://localhost:7071/api/...
+
+    environment:
+      # The ONLY storage setting the app needs. Hostnames resolve through the
+      # compose network: "azurite" is the service name above. The account key is
+      # Microsoft's publicly documented Azurite development key, not a secret.
+      AzureWebJobsStorage: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1;"
+      FUNCTIONS_WORKER_RUNTIME: "dotnet-isolated"
+      # Seconds between order status changes (Received -> Preparing -> Ready -> Collected)
+      StatusTransitionDelaySeconds: "${STATUS_TRANSITION_DELAY_SECONDS:-5}"
+
+    networks:
+      - pageturn-net
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/80' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s              # the Functions host needs time to start
+
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s           # lets an in-flight queue message finish before shutdown
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M               # a runaway container cannot starve the host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      com.pageturn.description: "PageTurn Azure Functions app"
+
+# =============================================================================
+# NETWORK: custom bridge
+# Containers on it find each other by service name (the Functions app uses
+# "azurite"). It is isolated from other Docker networks on the machine.
+# =============================================================================
+networks:
+  pageturn-net:
+    name: pageturn-net
+    driver: bridge
+
+# =============================================================================
+# VOLUME: Azurite data
+# Named volume managed by Docker. `docker compose down` KEEPS it, and
+# `docker compose down -v` deletes it (a clean slate).
+# =============================================================================
+volumes:
+  azurite-data:
+    name: pageturn-azurite-data
